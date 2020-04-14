@@ -1,4 +1,7 @@
+import queue
 from enum import Enum
+from queue import SimpleQueue
+
 import matplotlib.pyplot as plt
 from copy import deepcopy
 import numpy as np
@@ -26,34 +29,68 @@ class Task:
             self.b_done = self.b
             self.state = Task.State.DONE
 
-    def move_before_queue(self, system, wtime):
+    def move_before_queue(self, wtime, system):
         assert (self.state == Task.State.BEFORE_QUEUE)
         # self.t_plus -= t_delta
         if self.t_plus <= wtime:
             self.state = Task.State.IN_QUEUE
-            self.in_queue_id = system.give_in_queue_id()
+            system.scheduler.add_task(self)
+
+
+class Scheduler:
+    def __init__(self):
+        pass
+
+    def add_task(self, task: Task):
+        pass
+
+    def get_task_to_process(self, processor):
+
+        pass
+
+
+class FifoScheduler(Scheduler):
+    def __init__(self):
+        self.queue = queue.Queue(500)
+        super().__init__()
+
+    def add_task(self, task: Task):
+        self.queue.put(task)
+
+    def set_processor_task(self, processor):
+        if not processor.current_task and not self.queue.empty():
+            task = self.queue.get()
+            processor.set_task(task)
 
 
 class Processor:
-    def __init__(self, v):
+    def __init__(self, v, qtime=None):
         self.v = v
         self.current_task = None
+        self.time_limit = qtime
+        self.time_spent = 0
 
-    def process(self, t_delta):
+    def set_task(self, task):
+        assert (self.current_task is None)
+        assert (task.state == Task.State.IN_QUEUE)
+        self.time_spent = 0
+        task.state = Task.State.EXECUTING
+        self.current_task = task
+
+    def process(self, t_delta, scheduler):
         if self.current_task:
-
             b = self.v * t_delta
             self.current_task.do_task(b)
             if self.current_task.state == Task.State.DONE:
                 self.current_task = None
-        return self.current_task is not None
-
-    def set_task(self, task):
-        assert (self.current_task is None)
-        self.current_task = task
-        task.state = Task.State.EXECUTING
-
-    def is_doing_task(self):
+                return False
+            self.time_spent += t_delta
+            self.time_spent = round(self.time_spent, 4)
+            if self.time_limit is not None and self.time_limit <= self.time_spent:
+                self.current_task.state = Task.State.IN_QUEUE
+                scheduler.add_task(self.current_task)
+                self.current_task = None
+                return False
         return self.current_task is not None
 
 
@@ -63,20 +100,18 @@ class System:
         N = "n"
         U = "u"
 
-    def __init__(self, name, tasks, t_delta=0.01, time_limit=10, processors=None):
+    def __init__(self, name, tasks, t_delta=0.01, time_limit=10, processors=None, scheduler=None):
+        self.scheduler = scheduler
         self.name = name
         self.t_delta = t_delta
         self.time_limit = time_limit
         self.tasks = tasks
         self.in_queue_id = 0
         self.rev_t = 100
+        self.qtime = qtime
         self.processors = processors
         self.nt = []
         self.ut = []
-
-    def give_in_queue_id(self):
-        self.in_queue_id += 1
-        return self.in_queue_id - 1
 
     def print_state(self):
         print("TASKS BEFORE QUEUE")
@@ -90,23 +125,16 @@ class System:
 
     def main_loop(self):
         for time in range(0, self.time_limit * self.rev_t, int(self.t_delta * self.rev_t)):
-            print("\n\n\n")
-            print(time / self.rev_t)
+            # print("\n\n\n")
+            # print(time / self.rev_t)
 
             for task in [task for task in self.tasks if task.state == task.State.BEFORE_QUEUE]:
-                task.move_before_queue(self, time / self.rev_t)
+                task.move_before_queue(time / self.rev_t, self)
             for processor in self.processors:
-                if not processor.process(self.t_delta):
-                    self.attach_task_to_processor(processor)
+                if not processor.process(self.t_delta, self.scheduler):
+                    self.scheduler.set_processor_task(processor)
             self.calc_graphs()
             self.print_state()
-
-    def attach_task_to_processor(self, processor):
-        tasks_in_queue = [task for task in self.tasks if task.state == task.State.IN_QUEUE]
-        if len(tasks_in_queue) > 0:
-            task = \
-                sorted(tasks_in_queue, key=lambda task: task.in_queue_id)[0]
-            processor.set_task(task)
 
     def calc_graphs(self):
         current_u = 0
@@ -138,22 +166,29 @@ def plot_graphs_from_multiple_systems(systems, type):
 
 
 tasks = [
-    Task(t_plus=1, b=10),
-    Task(t_plus=2, b=5),
-    Task(t_plus=3, b=2),
-    Task(t_plus=6, b=1),
+    Task(t_plus=1, b=3),
+    Task(t_plus=1, b=7),
+    Task(t_plus=1, b=1),
 ]
 
+fifoScheduler = FifoScheduler()
+
+qtime = 2
 systems = [
-    System("Single Processor v=2", deepcopy(tasks), time_limit=20,
-           processors=deepcopy([Processor(v=2)])),
-    System("Single Processor v=1", deepcopy(tasks), time_limit=20,
-           processors=deepcopy([Processor(v=1)])),
-    System("Double Processor v=1", deepcopy(tasks), time_limit=20,
-           processors=deepcopy([Processor(v=1), Processor(v=1)]))
+    System("Single Processor v=2, RR", deepcopy(tasks), time_limit=20,
+           processors=deepcopy([Processor(v=1, qtime=qtime)]), scheduler=fifoScheduler),
+    # System("Single Processor v=1", deepcopy(tasks), time_limit=20,
+    #        processors=deepcopy([Processor(v=1, qtime=qtime), Processor(v=1, qtime=qtime)]), scheduler=fifoScheduler),
+    # System("Double Processor v=1", deepcopy(tasks), time_limit=20,
+    #        processors=deepcopy([Processor(v=2, qtime=qtime)]), scheduler=fifoScheduler),
+    System("Single Processor v=2, FIFO", deepcopy(tasks), time_limit=20,
+           processors=deepcopy([Processor(v=1, qtime=None)]), scheduler=fifoScheduler),
+    # System("Single Processor v=1", deepcopy(tasks), time_limit=20,
+    #        processors=deepcopy([Processor(v=1, qtime=None), Processor(v=1, qtime=qtime)]), scheduler=fifoScheduler),
+    # System("Double Processor v=1", deepcopy(tasks), time_limit=20,
+    #        processors=deepcopy([Processor(v=2, qtime=None)]), scheduler=fifoScheduler),
 ]
 
 for system in systems:
     system.main_loop()
-
-plot_graphs_from_multiple_systems(systems, type=System.GraphType.U)
+plot_graphs_from_multiple_systems(systems, type=System.GraphType.N)
