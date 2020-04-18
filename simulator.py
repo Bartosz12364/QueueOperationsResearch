@@ -17,17 +17,21 @@ class Task:
     def __init__(self, t_plus, b, state=State.BEFORE_QUEUE):
         self.state = state
         self.t_plus = t_plus
+        self.t_minus = None
         self.b = b
         self.b_done = 0
         self.in_queue_id = None
 
-    def do_task(self, b_count):
+    def do_task(self, b_count, wtime):
         assert (self.state == Task.State.EXECUTING)
         self.b_done += b_count
         self.b_done = round(self.b_done, 5)  # numerical problems
         if self.b <= self.b_done:
             self.b_done = self.b
             self.state = Task.State.DONE
+
+            self.t_minus = wtime
+            print("TIMEL:", self.t_plus, self.t_minus)
 
     def move_before_queue(self, wtime, system):
         assert (self.state == Task.State.BEFORE_QUEUE)
@@ -49,7 +53,7 @@ class Scheduler:
         pass
 
 
-class FifoScheduler(Scheduler):
+class RRScheduler(Scheduler):
     def __init__(self):
         self.queue = queue.Queue(500)
         super().__init__()
@@ -77,10 +81,10 @@ class Processor:
         task.state = Task.State.EXECUTING
         self.current_task = task
 
-    def process(self, t_delta, scheduler):
+    def process(self, t_delta, scheduler, wtime):
         if self.current_task:
             b = self.v * t_delta
-            self.current_task.do_task(b)
+            self.current_task.do_task(b, wtime)
             if self.current_task.state == Task.State.DONE:
                 self.current_task = None
                 return False
@@ -109,6 +113,7 @@ class System:
         self.in_queue_id = 0
         self.rev_t = 100
         self.qtime = qtime
+        self.average_delay = None
         self.processors = processors
         self.nt = []
         self.ut = []
@@ -131,10 +136,17 @@ class System:
             for task in [task for task in self.tasks if task.state == task.State.BEFORE_QUEUE]:
                 task.move_before_queue(time / self.rev_t, self)
             for processor in self.processors:
-                if not processor.process(self.t_delta, self.scheduler):
+                if not processor.process(self.t_delta, self.scheduler, time / self.rev_t):
                     self.scheduler.set_processor_task(processor)
             self.calc_graphs()
             self.print_state()
+
+    def calc_average_delay(self):
+        sum = 0
+        for task in self.tasks:
+            sum += task.t_minus-task.t_plus
+        self.average_delay = sum/len(self.tasks)
+
 
     def calc_graphs(self):
         current_u = 0
@@ -147,48 +159,59 @@ class System:
     def plot_graphs(self, type):
         if type != System.GraphType.N:
             plt.plot([x / self.rev_t for x in range(0, self.time_limit * self.rev_t, int(self.t_delta * self.rev_t))],
-                     self.ut, label='u(t) %s' % self.name)
+                     self.ut, label='%s%s' % ("u(t) " if type == System.GraphType.BOTH else "", self.name))
         if type != System.GraphType.U:
             plt.plot([x / self.rev_t for x in range(0, self.time_limit * self.rev_t, int(self.t_delta * self.rev_t))],
-                     self.nt, label='n(t) %s' % self.name)
+                     self.nt, label='%s%s' % ("n(t) " if type == System.GraphType.BOTH  else "", self.name))
 
 
 def plot_graphs_from_multiple_systems(systems, type):
     plt.style.use('seaborn')
     for system in systems:
         system.plot_graphs(type)
-    plt.xticks(np.arange(0, 20, step=1))
-    plt.yticks(np.arange(0, 20, step=1))
+    plt.xticks(np.arange(0, 13, step=1))
+    plt.yticks(np.arange(0, 13, step=1))
     plt.xlabel("Time [s]")
-    plt.ylabel("Values")
+    if type == System.GraphType.U:
+        plt.ylabel("U(t)")
+    elif type == System.GraphType.N:
+        plt.ylabel("N(t)")
+    else:
+        plt.ylabel("values (U(t) or N(t))")
     plt.legend()
     plt.show()
 
 
 tasks = [
-    Task(t_plus=1, b=3),
     Task(t_plus=1, b=7),
     Task(t_plus=1, b=1),
+    Task(t_plus=1, b=3),
 ]
 
-fifoScheduler = FifoScheduler()
+RRScheduler = RRScheduler()
 
 qtime = 2
 systems = [
-    System("Single Processor v=2, RR", deepcopy(tasks), time_limit=20,
-           processors=deepcopy([Processor(v=1, qtime=qtime)]), scheduler=fifoScheduler),
+    System("1x Processor v=1, RR", deepcopy(tasks), time_limit=13,
+           processors=deepcopy([Processor(v=1, qtime=qtime)]), scheduler=RRScheduler),
     # System("Single Processor v=1", deepcopy(tasks), time_limit=20,
     #        processors=deepcopy([Processor(v=1, qtime=qtime), Processor(v=1, qtime=qtime)]), scheduler=fifoScheduler),
     # System("Double Processor v=1", deepcopy(tasks), time_limit=20,
     #        processors=deepcopy([Processor(v=2, qtime=qtime)]), scheduler=fifoScheduler),
-    System("Single Processor v=2, FIFO", deepcopy(tasks), time_limit=20,
-           processors=deepcopy([Processor(v=1, qtime=None)]), scheduler=fifoScheduler),
-    # System("Single Processor v=1", deepcopy(tasks), time_limit=20,
-    #        processors=deepcopy([Processor(v=1, qtime=None), Processor(v=1, qtime=qtime)]), scheduler=fifoScheduler),
+    # System("1x Processor v=1, FIFO", deepcopy(tasks), time_limit=13,
+    #        processors=deepcopy([Processor(v=1, qtime=None)]), scheduler=RRScheduler),
+    # System("2x Processor v=1, FIFO", deepcopy(tasks), time_limit=10,
+    #        processors=deepcopy([Processor(v=1, qtime=None), Processor(v=1, qtime=None)]), scheduler=RRScheduler),
     # System("Double Processor v=1", deepcopy(tasks), time_limit=20,
     #        processors=deepcopy([Processor(v=2, qtime=None)]), scheduler=fifoScheduler),
 ]
 
 for system in systems:
     system.main_loop()
+    system.calc_average_delay()
+
+for system in systems:
+    print(system.name)
+    print(system.average_delay)
+plot_graphs_from_multiple_systems(systems, type=System.GraphType.U)
 plot_graphs_from_multiple_systems(systems, type=System.GraphType.N)
